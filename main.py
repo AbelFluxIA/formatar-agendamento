@@ -12,32 +12,42 @@ def formatar_agendamento():
         data = request.get_json()
         
         cpf = data.get('cpf', '')
-        horarios = data.get('horarios', {})
+        horarios = data.get('horarios', []) # Default para lista vazia
         horario_escolhido = str(data.get('horario_escolhido', ''))
 
         # --- 1. TRATAMENTO DO CPF ---
         # Remove tudo que não for dígito
         cpf_limpo = re.sub(r'\D', '', str(cpf))
 
-        # --- 2. TRATAMENTO DOS HORÁRIOS ---
-        lista_horarios = horarios
+        # --- 2. TRATAMENTO DOS HORÁRIOS (FIXED) ---
+        lista_dias = horarios
 
         # Se a automação enviar o JSON como string, fazemos o parse
         if isinstance(horarios, str):
             try:
-                lista_horarios = json.loads(horarios)
+                lista_dias = json.loads(horarios)
             except json.JSONDecodeError:
                 return jsonify({"error": "O campo 'horarios' não é um JSON válido."}), 400
 
-        # Verifica se a estrutura schedules existe
-        if not lista_horarios or 'schedules' not in lista_horarios:
-            return jsonify({"error": "JSON de horários inválido ou sem a chave 'schedules'."}), 400
+        # NORMALIZAÇÃO DA ESTRUTURA
+        # O problema ocorria aqui. Agora tratamos Listas e Dicionários.
+        schedules_para_processar = []
+
+        if isinstance(lista_dias, list):
+            # CASO 1: O input é uma lista direta (Seu caso atual)
+            schedules_para_processar = lista_dias
+        elif isinstance(lista_dias, dict) and 'schedules' in lista_dias:
+            # CASO 2: O input é um objeto com a chave 'schedules' (Legado)
+            schedules_para_processar = lista_dias['schedules']
+        else:
+            # Se não for nenhum dos dois, retorna erro
+            return jsonify({"error": "Formato de horários inválido. Esperava uma lista ou objeto com 'schedules'."}), 400
 
         # --- 3. BUSCA DO HORÁRIO ESCOLHIDO ---
         dados_encontrados = None
 
-        # Percorre cada dia disponível
-        for dia in lista_horarios.get('schedules', []):
+        # Percorre a lista normalizada
+        for dia in schedules_para_processar:
             avaliable_times = dia.get('AvaliableTimes', [])
             
             if avaliable_times:
@@ -45,10 +55,11 @@ def formatar_agendamento():
                     # LÓGICA DE COMPARAÇÃO:
                     # Verifica se a string "horario_escolhido" contém a Data e o horário de início
                     
-                    data_no_slot = dia.get('Date', '') # ex: "2025-12-05"
-                    hora_inicio_slot = slot.get('from', '') # ex: "16:00"
+                    data_no_slot = dia.get('Date', '') # ex: "2025-12-15"
+                    hora_inicio_slot = slot.get('from', '') # ex: "14:00"
 
                     if data_no_slot and hora_inicio_slot:
+                        # Validação robusta: garante que ambos estão na string de escolha
                         if data_no_slot in horario_escolhido and hora_inicio_slot in horario_escolhido:
                             
                             # Montagem da data fixa solicitada: Data + T03:00:00.000Z
@@ -80,7 +91,8 @@ def formatar_agendamento():
         return jsonify(resposta)
 
     except Exception as e:
-        print(f"Erro: {e}")
+        # Log do erro real no console para debug
+        print(f"Erro CRÍTICO no servidor: {e}")
         return jsonify({"error": "Erro interno no processamento."}), 500
 
 if __name__ == '__main__':
