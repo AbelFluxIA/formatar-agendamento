@@ -11,33 +11,50 @@ def formatar_agendamento():
     try:
         data = request.get_json()
         
+        # Pega os inputs
         cpf = data.get('cpf', '')
         horarios = data.get('horarios', []) 
-        horario_escolhido = str(data.get('horario_escolhido', '')).strip() # Remove espaços extras
+        
+        # Converte para string e remove espaços em branco das pontas
+        raw_horario = data.get('horario_escolhido', '')
+        horario_escolhido = str(raw_horario).strip()
 
         # --- 1. TRATAMENTO DO CPF ---
         cpf_limpo = re.sub(r'\D', '', str(cpf))
 
-        # --- 2. TRATAMENTO E PARSE DO INPUT "HORARIO_ESCOLHIDO" ---
-        # Entrada esperada: "13/12/2025 10:00"
-        # Precisamos separar data e hora e converter a data para YYYY-MM-DD para bater com o JSON
+        # --- 2. SMART PARSER DE DATA (A SOLUÇÃO) ---
+        dt_obj = None
         
-        target_date_iso = "" # Vai virar "2025-12-13"
-        target_time = ""     # Vai virar "10:00"
+        # Lista de formatos que vamos tentar aceitar
+        formatos_aceitos = [
+            "%d/%m/%Y %H:%M",       # 13/12/2025 10:00 (O ideal)
+            "%d/%m/%Y %H:%M:%S",    # 13/12/2025 10:00:00 (Com segundos)
+            "%Y-%m-%d %H:%M",       # 2025-12-13 10:00 (Formato ISO/Banco)
+            "%Y-%m-%d %H:%M:%S",    # 2025-12-13 10:00:00
+            "%Y-%m-%dT%H:%M:%S",    # ISO estrito com T
+        ]
 
-        try:
-            # Tenta fazer o parse da data brasileira
-            dt_obj = datetime.strptime(horario_escolhido, "%d/%m/%Y %H:%M")
-            target_date_iso = dt_obj.strftime("%Y-%m-%d") # Converte para 2025-12-13
-            target_time = dt_obj.strftime("%H:%M")        # Garante 10:00
-        except ValueError:
-            # Se falhar o parse, retorna erro claro
+        for fmt in formatos_aceitos:
+            try:
+                dt_obj = datetime.strptime(horario_escolhido, fmt)
+                break # Se funcionou, para de tentar
+            except ValueError:
+                continue # Se falhou, tenta o próximo
+
+        # Se depois de tentar tudo, dt_obj ainda for None, retorna erro mostrando O QUE VEIO
+        if dt_obj is None:
             return jsonify({
-                "error": "Formato de 'horario_escolhido' inválido.",
-                "detalhe": "Envie no formato 'DD/MM/AAAA HH:MM' (ex: 13/12/2025 10:00)"
+                "error": "Formato de data desconhecido.",
+                "recebido": horario_escolhido, # <--- AQUI VAMOS DESCOBRIR A VERDADE
+                "tipo_recebido": str(type(raw_horario)),
+                "esperado": "DD/MM/AAAA HH:MM"
             }), 400
 
-        # --- 3. NORMALIZAÇÃO DA ESTRUTURA DOS HORÁRIOS ---
+        # Se deu certo, padroniza para a busca
+        target_date_iso = dt_obj.strftime("%Y-%m-%d") # "2025-12-13"
+        target_time = dt_obj.strftime("%H:%M")        # "10:00"
+
+        # --- 3. TRATAMENTO DOS HORÁRIOS ---
         lista_dias = horarios
         if isinstance(horarios, str):
             try:
@@ -57,37 +74,26 @@ def formatar_agendamento():
         dados_encontrados = None
 
         for dia in schedules_para_processar:
-            # Pega a data do JSON (ex: "2025-12-13")
             data_do_json = dia.get('Date', '')
 
-            # OTIMIZAÇÃO: Se a data do dia não for a data escolhida, nem olha os horários
+            # Se a data não bater, pula
             if data_do_json != target_date_iso:
                 continue
 
             avaliable_times = dia.get('AvaliableTimes', [])
             
             for slot in avaliable_times:
-                # Pega o horário de início do slot (ex: "10:00" ou "10:00:00")
                 hora_slot_raw = slot.get('from', '')
-                
-                # Normaliza para comparar apenas os 5 primeiros caracteres (HH:MM)
-                # Isso resolve problemas se o JSON vier "10:00:00"
-                hora_slot_clean = hora_slot_raw[:5] 
+                # Pega só os 5 primeiros caracteres (10:00)
+                hora_slot_clean = hora_slot_raw[:5]
 
-                # COMPARAÇÃO EXATA
                 if hora_slot_clean == target_time:
-                    
-                    # Monta a resposta exatamente como você pediu
-                    # Data Fixa com T03...
+                    # Monta resposta
                     data_formatada_fixa = f"{data_do_json}T03:00:00.000Z"
                     
-                    # Garante output HH:MM cortando a string [:5]
-                    hora_inicio_final = slot.get('from', '')[:5]
-                    hora_fim_final = slot.get('to', '')[:5]
-
                     dados_encontrados = {
-                        "from": hora_inicio_final, # Retorna ex: "10:00"
-                        "to": hora_fim_final,      # Retorna ex: "11:00"
+                        "from": slot.get('from')[:5], # Força 10:00
+                        "to": slot.get('to')[:5],     # Força 11:00
                         "date": data_formatada_fixa
                     }
                     break 
@@ -97,8 +103,9 @@ def formatar_agendamento():
 
         if not dados_encontrados:
             return jsonify({
-                "error": "Horário não encontrado.",
-                "detalhe": f"Não encontramos o horário {target_time} na data {target_date_iso}."
+                "error": "Horário não encontrado na grade.",
+                "data_buscada": target_date_iso,
+                "hora_buscada": target_time
             }), 404
 
         # --- 5. RESPOSTA FINAL ---
@@ -111,7 +118,7 @@ def formatar_agendamento():
 
     except Exception as e:
         print(f"Erro CRÍTICO: {e}")
-        return jsonify({"error": "Erro interno no processamento."}), 500
+        return jsonify({"error": "Erro interno no servidor.", "log": str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 3000))
