@@ -6,6 +6,40 @@ import os
 
 app = Flask(__name__)
 
+# --- HELPER: DETECÇÃO DE GÊNERO EFICIENTE (VIBE CODING) ---
+def estimar_genero(nome_completo):
+    """
+    Detecta F ou M baseado no primeiro nome.
+    Otimizado para PT-BR com tratamento de exceções comuns.
+    Custo computacional: O(1).
+    """
+    if not nome_completo or not isinstance(nome_completo, str):
+        return "M" # Fallback padrão seguro
+
+    # Pega o primeiro nome e normaliza
+    primeiro_nome = nome_completo.strip().split(' ')[0].lower()
+    
+    # Exceções comuns no Brasil (Nomes femininos que NÃO terminam em 'a')
+    excecoes_fem = {
+        'beatriz', 'liz', 'thais', 'raquel', 'ester', 'simone', 'michelle', 
+        'kelly', 'gaby', 'isabel', 'maite', 'nicole', 'alice', 'clarice', 
+        'inês', 'luz', 'ingrid', 'miriam', 'rute', 'isis'
+    }
+    
+    # Exceções comuns no Brasil (Nomes masculinos que terminam em 'a')
+    excecoes_masc = {
+        'luca', 'ubirajara', 'joshua', 'akira', 'mustafa', 'mika', 'sasha'
+    }
+
+    if primeiro_nome in excecoes_fem:
+        return "F"
+    if primeiro_nome in excecoes_masc:
+        return "M"
+    
+    # Regra Geral: Terminou em 'a' é F, caso contrário M
+    return "F" if primeiro_nome.endswith('a') else "M"
+
+
 @app.route('/formatar-agendamento', methods=['POST'])
 def formatar_agendamento():
     try:
@@ -13,7 +47,8 @@ def formatar_agendamento():
         
         # Pega os inputs
         cpf = data.get('cpf', '')
-        horarios = data.get('horarios', []) 
+        horarios = data.get('horarios', [])
+        nome = data.get('nome', '') # <--- NOVO INPUT
         
         # Converte para string e remove espaços em branco das pontas
         raw_horario = data.get('horario_escolhido', '')
@@ -22,7 +57,7 @@ def formatar_agendamento():
         # --- 1. TRATAMENTO DO CPF ---
         cpf_limpo = re.sub(r'\D', '', str(cpf))
 
-        # --- 2. SMART PARSER DE DATA (A SOLUÇÃO) ---
+        # --- 2. SMART PARSER DE DATA ---
         dt_obj = None
         
         # Lista de formatos que vamos tentar aceitar
@@ -37,22 +72,21 @@ def formatar_agendamento():
         for fmt in formatos_aceitos:
             try:
                 dt_obj = datetime.strptime(horario_escolhido, fmt)
-                break # Se funcionou, para de tentar
+                break 
             except ValueError:
-                continue # Se falhou, tenta o próximo
+                continue 
 
-        # Se depois de tentar tudo, dt_obj ainda for None, retorna erro mostrando O QUE VEIO
         if dt_obj is None:
             return jsonify({
                 "error": "Formato de data desconhecido.",
-                "recebido": horario_escolhido, # <--- AQUI VAMOS DESCOBRIR A VERDADE
+                "recebido": horario_escolhido,
                 "tipo_recebido": str(type(raw_horario)),
                 "esperado": "DD/MM/AAAA HH:MM"
             }), 400
 
         # Se deu certo, padroniza para a busca
-        target_date_iso = dt_obj.strftime("%Y-%m-%d") # "2025-12-13"
-        target_time = dt_obj.strftime("%H:%M")        # "10:00"
+        target_date_iso = dt_obj.strftime("%Y-%m-%d") 
+        target_time = dt_obj.strftime("%H:%M")        
 
         # --- 3. TRATAMENTO DOS HORÁRIOS ---
         lista_dias = horarios
@@ -76,7 +110,6 @@ def formatar_agendamento():
         for dia in schedules_para_processar:
             data_do_json = dia.get('Date', '')
 
-            # Se a data não bater, pula
             if data_do_json != target_date_iso:
                 continue
 
@@ -84,16 +117,14 @@ def formatar_agendamento():
             
             for slot in avaliable_times:
                 hora_slot_raw = slot.get('from', '')
-                # Pega só os 5 primeiros caracteres (10:00)
                 hora_slot_clean = hora_slot_raw[:5]
 
                 if hora_slot_clean == target_time:
-                    # Monta resposta
                     data_formatada_fixa = f"{data_do_json}T03:00:00.000Z"
                     
                     dados_encontrados = {
-                        "from": slot.get('from')[:5], # Força 10:00
-                        "to": slot.get('to')[:5],     # Força 11:00
+                        "from": slot.get('from')[:5], 
+                        "to": slot.get('to')[:5],     
                         "date": data_formatada_fixa
                     }
                     break 
@@ -108,9 +139,13 @@ def formatar_agendamento():
                 "hora_buscada": target_time
             }), 404
 
-        # --- 5. RESPOSTA FINAL ---
+        # --- 5. LÓGICA DE SEXO ---
+        sexo_detectado = estimar_genero(nome) # <--- PROCESSAMENTO EFICIENTE
+
+        # --- 6. RESPOSTA FINAL ---
         resposta = {
-            "cpf_formatado": cpf_limpo
+            "cpf_formatado": cpf_limpo,
+            "sexo": sexo_detectado # <--- INSERÇÃO NA RESPOSTA
         }
         resposta.update(dados_encontrados)
 
